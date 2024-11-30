@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/plugins/short_path_to_hospital" >
+        <file>icon.png</file>
+    </qresource>
+</RCC>

@@ -31,7 +31,8 @@ from qgis.core import (
     QgsProcessingParameterFeatureSink,
     QgsFeatureSink,
     QgsVectorLayer,
-    QgsDataSourceUri
+    QgsDataSourceUri,
+    QgsProject
 )
 
 # Initialize Qt resources from file resources.py
@@ -75,6 +76,86 @@ class shortPathToHospital:
         # Check if plugin was started the first time in current QGIS session
         # Must be set in initGui() to survive plugin reloads
         self.first_start = None
+
+
+    def connect_to_postgis(self, feedback):
+        """
+        Connects to PostGIS database and retrieves hospital names and road numbers.
+        """
+        feedback.pushInfo("Connecting to PostGIS...")
+        uri = QgsDataSourceUri()
+
+        # Database connection settings
+        uri.setConnection("localhost", "5432", "analysis", "postgres", "1234")
+
+        # Fetch hospitals
+        hospital_query = "SELECT name FROM hotosm_mwi_health_facilities_points_shp"
+        hospital_layer = QgsVectorLayer(f"{uri.uri()} key=geom sql={hospital_query}", 
+                                        "Hospitals", "postgres")
+        if not hospital_layer.isValid():
+            raise QgsProcessingException("Failed to load hospital data.")
+
+        hospital_names = [f["name"] for f in hospital_layer.getFeatures()]
+
+        # Fetch roads
+        road_query = "SELECT roadno FROM roads1"
+        road_layer = QgsVectorLayer(f"{uri.uri()} key=geom sql={road_query}", 
+                                    "Roads", "postgres")
+        if not road_layer.isValid():
+            raise QgsProcessingException("Failed to load road data.")
+
+        roads_number = [f["roadno"] for f in road_layer.getFeatures()]
+
+        feedback.pushInfo(f"Hospitals: {', '.join(hospital_names)}")
+        feedback.pushInfo(f"Road numbers: {', '.join(roads_number)}")
+
+        return roads_number, hospital_names, hospital_layer, road_layer
+
+    def processAlgorithm(self, parameters, context, feedback):
+        """
+        Main processing logic for the algorithm.
+        """
+        feedback.pushInfo("Fetching data from PostGIS...")
+        road_numbers, hospital_names, hospital_layer, road_layer = self.connect_to_postgis(feedback)
+
+        if not hospital_layer or not road_layer:
+            raise QgsProcessingException("Unable to load the necessary layers.")
+
+        # Display dialog for user input
+        dialog = shortPathToHospitalDialog()
+        dialog.comboBox.addItems(road_numbers)
+        dialog.comboBox_2.addItems(hospital_names)
+
+        if not dialog.exec_():
+            raise QgsProcessingException("User canceled the operation.")
+
+        selected_road = dialog.comboBox.currentText()
+        selected_hospital = dialog.comboBox_2.currentText()
+
+        feedback.pushInfo(f"Selected Road: {selected_road}")
+        feedback.pushInfo(f"Selected Hospital: {selected_hospital}")
+
+        # Create an output feature sink
+        (sink, dest_id) = self.parameterAsSink(
+            parameters,
+            self.OUTPUT,
+            context,
+            road_layer.fields(),
+            road_layer.wkbType(),
+            road_layer.sourceCrs()
+        )
+
+        for feature in road_layer.getFeatures():
+            if feedback.isCanceled():
+                break
+            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+
+        feedback.pushInfo("Shortest path analysis completed.")
+        return {self.OUTPUT: dest_id}
+
+    def tr(self, string):
+        return QCoreApplication.translate("hospitalRoute", string)
+
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -198,6 +279,14 @@ class shortPathToHospital:
             self.first_start = False
             self.dlg = shortPathToHospitalDialog()
 
+
+        # Fetch the currently loaded layers
+        layers = QgsProject.instance().layerTreeRoot().children()
+        # Clear the contents of the comboBox from previous runs
+        self.dlg.comboBox.clear()
+        # Populate the comboBox with names of all the loaded layers
+        self.dlg.comboBox.addItems([layer.name() for layer in layers])
+
         # show the dialog
         self.dlg.show()
         # Run the dialog event loop
@@ -207,3 +296,5 @@ class shortPathToHospital:
             # Do something useful here - delete the line containing pass and
             # substitute with your code.
             pass
+
+
